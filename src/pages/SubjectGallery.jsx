@@ -6,7 +6,7 @@ import {
   addDoc,
   query,
   where,
-  onSnapshot,
+  getDocs,
   serverTimestamp,
   doc,
   deleteDoc,
@@ -22,13 +22,20 @@ export const SubjectGallery = () => {
   const [loadingPhotos, setLoadingPhotos] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
-  const [showPhotos, setShowPhotos] = useState(false);
 
-  // لفتح الكاميرا / اختيار الصورة
+  // للـ Gallery
   const fileInputRef = useRef(null);
 
-  // للصورة التي نعرضها بشكل كبير
+  // لمعاينة الصورة بحجم كبير
   const [previewPhoto, setPreviewPhoto] = useState(null);
+
+  // للكاميرا
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [cameraError, setCameraError] = useState("");
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+
+  // ================== أدوات مساعدة ==================
 
   // تحويل ملف لصيغة base64
   const fileToDataUrl = (file) =>
@@ -39,71 +46,161 @@ export const SubjectGallery = () => {
       reader.readAsDataURL(file);
     });
 
-  // تحميل صور هذه المادة فقط عندما نضغط "Show photos"
-  useEffect(() => {
-    if (!showPhotos) return;
+  // تحميل كل الصور لهذه المادة + هذا المستخدم من Firestore
+  const fetchPhotos = async () => {
+    if (!user) return;
 
     setLoadingPhotos(true);
     setError("");
 
-    const q = query(
-      collection(db, "photos"),
-      where("subject", "==", subject)
-    );
+    try {
+      const q = query(
+        collection(db, "photos"),
+        where("subject", "==", subject),
+        where("userId", "==", user.uid)
+      );
 
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        setPhotos(list);
-        setLoadingPhotos(false);
-      },
-      (err) => {
-        console.error("Firestore onSnapshot error:", err);
-        setError(err.message);
-        setLoadingPhotos(false);
-      }
-    );
-
-    return () => unsub();
-  }, [subject, showPhotos]);
-
-  const handleAddPhotoClick = () => {
-    if (fileInputRef.current) {
-      fileInputRef.current.click();
+      const snap = await getDocs(q);
+      const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      setPhotos(list);
+    } catch (err) {
+      console.error("fetchPhotos error:", err);
+      setError(err.message);
+    } finally {
+      setLoadingPhotos(false);
     }
   };
 
-  const handleAddPhoto = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file || !user) return;
+  // استدعاء أولي عند فتح صفحة المادة أو تغيير المستخدم
+  useEffect(() => {
+    fetchPhotos();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subject, user?.uid]);
 
+  // رفع dataUrl إلى Firestore ثم إعادة تحميل الصور
+  const uploadDataUrl = async (dataUrl) => {
+    if (!user) return;
     setUploading(true);
     setError("");
 
     try {
-      const dataUrl = await fileToDataUrl(file);
-
       await addDoc(collection(db, "photos"), {
         subject,
         dataUrl,
         userId: user.uid,
         createdAt: serverTimestamp(),
       });
+
+      // بعد نجاح الرفع، نعيد تحميل القائمة
+      await fetchPhotos();
     } catch (err) {
       console.error("Upload error:", err);
       setError(err.message);
     } finally {
       setUploading(false);
+    }
+  };
+
+  // ================== GALLERY ==================
+
+  const handleGalleryClick = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.click();
+    }
+  };
+
+  const handleGalleryChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file || !user) return;
+
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      await uploadDataUrl(dataUrl);
+    } finally {
       e.target.value = "";
     }
   };
+
+  // ================== CAMERA ==================
+
+  const openCamera = async () => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setCameraError("Camera is not supported in this browser.");
+      return;
+    }
+
+    try {
+      setCameraError("");
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment" },
+        audio: false,
+      });
+
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+
+      setCameraOpen(true);
+    } catch (err) {
+      console.error("Camera error:", err);
+      setCameraError(err.message);
+    }
+  };
+
+  const stopCamera = () => {
+    const stream = streamRef.current;
+    if (stream) {
+      stream.getTracks().forEach((t) => t.stop());
+    }
+    streamRef.current = null;
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setCameraOpen(false);
+  };
+
+  const handleCapture = async () => {
+    if (!videoRef.current) return;
+
+    const video = videoRef.current;
+    const canvas = document.createElement("canvas");
+    const width = video.videoWidth || 800;
+    const height = video.videoHeight || 600;
+
+    // تصغير الصورة حتى لا تكون ثقيلة جداً
+    const maxWidth = 900;
+    const scale = Math.min(maxWidth / width, 1);
+    canvas.width = width * scale;
+    canvas.height = height * scale;
+
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
+
+    stopCamera();
+    await uploadDataUrl(dataUrl);
+  };
+
+  // إيقاف الكاميرا عند مغادرة الصفحة
+  useEffect(() => {
+    return () => {
+      stopCamera();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ================== DELETE & PREVIEW ==================
 
   const handleDelete = async (photoId) => {
     const ok = window.confirm("Delete this photo?");
     if (!ok) return;
     try {
       await deleteDoc(doc(db, "photos", photoId));
+      await fetchPhotos();
     } catch (err) {
       console.error("Delete error:", err);
       setError(err.message);
@@ -118,6 +215,8 @@ export const SubjectGallery = () => {
     setPreviewPhoto(null);
   };
 
+  // ================== RENDER ==================
+
   return (
     <div className="subject-page subject-page-mobile">
       <header className="subject-header">
@@ -130,32 +229,40 @@ export const SubjectGallery = () => {
         </Link>
       </header>
 
-      {/* أزرار مهيأة للموبايل */}
+      {/* أزرار للموبايل: كاميرا + Gallery + Refresh */}
       <section className="subject-actions mobile-actions">
         <button
           type="button"
           className="primary-mobile-btn"
-          onClick={handleAddPhotoClick}
+          onClick={openCamera}
           disabled={uploading}
         >
-          {uploading ? "Uploading..." : "Add photo (Camera)"}
+          {uploading ? "Uploading..." : "Take photo (Camera)"}
         </button>
 
         <button
           type="button"
           className="secondary-mobile-btn"
-          onClick={() => setShowPhotos(true)}
+          onClick={handleGalleryClick}
+          disabled={uploading}
         >
-          {showPhotos ? "Refresh photos" : "Show photos"}
+          Upload from gallery
         </button>
 
-        {/* input مخفي مربوط بالكاميرا على الهاتف */}
+        <button
+          type="button"
+          className="secondary-mobile-btn"
+          onClick={fetchPhotos}
+          disabled={loadingPhotos}
+        >
+          {loadingPhotos ? "Refreshing..." : "Refresh photos"}
+        </button>
+
         <input
           ref={fileInputRef}
           type="file"
           accept="image/*"
-          capture="environment"
-          onChange={handleAddPhoto}
+          onChange={handleGalleryChange}
           style={{ display: "none" }}
         />
       </section>
@@ -172,14 +279,13 @@ export const SubjectGallery = () => {
           </p>
         )}
 
-        {showPhotos && !loadingPhotos && photos.length === 0 && !error && (
+        {!loadingPhotos && photos.length === 0 && !error && (
           <p className="empty-state">No photos yet for this subject.</p>
         )}
 
         <div className="photos-grid">
           {photos.map((p) => (
             <div key={p.id} className="photo-card">
-              {/* عند الضغط على الصورة تفتح في مودال كبير */}
               <img
                 src={p.dataUrl}
                 alt={subject}
@@ -203,7 +309,7 @@ export const SubjectGallery = () => {
         <div className="photo-modal-overlay" onClick={closePreview}>
           <div
             className="photo-modal"
-            onClick={(e) => e.stopPropagation()} // حتى لا يُغلق عند الضغط داخل المودال
+            onClick={(e) => e.stopPropagation()}
           >
             <img src={previewPhoto.dataUrl} alt={subject} />
             <div className="photo-modal-footer">
@@ -214,6 +320,39 @@ export const SubjectGallery = () => {
                 onClick={closePreview}
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* مودال الكاميرا */}
+      {cameraOpen && (
+        <div className="camera-modal-overlay" onClick={stopCamera}>
+          <div
+            className="camera-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <video ref={videoRef} autoPlay playsInline muted />
+            {cameraError && (
+              <p className="auth-message" style={{ color: "#fca5a5" }}>
+                {cameraError}
+              </p>
+            )}
+            <div className="camera-controls">
+              <button
+                type="button"
+                className="camera-btn"
+                onClick={handleCapture}
+              >
+                Capture
+              </button>
+              <button
+                type="button"
+                className="camera-btn camera-btn-cancel"
+                onClick={stopCamera}
+              >
+                Cancel
               </button>
             </div>
           </div>
