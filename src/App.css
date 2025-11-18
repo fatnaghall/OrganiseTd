@@ -1,0 +1,45 @@
+
+.seule {
+    display: block;
+}
+
+.os {
+
+  font-size: 15px;
+  color: azure;  
+
+}
+.nov-list {
+
+display: flex;
+align-items: center;
+justify-content: space-between;
+
+}
+.nov {
+
+list-style-type: none;   
+display: flex; 
+}
+.navo {
+
+color:aliceblue;
+margin-right: 20px;
+
+}
+.list {
+
+margin-block:40px;
+line-height: 19px;
+}
+.list::marker {
+color : rgb(183, 211, 25);
+}
+main {
+background-image: url(js.png);
+padding: 60px 30px;
+background-repeat: none;
+background-position-x:right ;
+
+
+}
